@@ -85,3 +85,77 @@ A arquitetura foi intencionalmente construída com problemas:
 - ausência de Aggregate Root, Value Objects, portas e adaptadores.
 
 Esses problemas fazem parte da atividade e não devem ser corrigidos antes da entrega aos alunos.
+
+---
+
+## Refatoração realizada — Bounded Context de Pagamento
+
+Foi criado um contexto de Pagamento isolado dentro do mesmo projeto Spring Boot, aplicando os conceitos de Domain-Driven Design.
+
+### O que foi implementado
+
+- **Pagamento como Aggregate Root** com factory method `criar()` que encapsula todas as regras de aprovação e recusa.
+- **Value Objects**: `Dinheiro` (valor monetário), `NumeroCartao` (validação e mascaramento) e `PagamentoId` (identidade).
+- **Enums**: `StatusPagamento` (APROVADO, RECUSADO, BLOQUEADO) e `FormaPagamento` (CARTAO), substituindo strings soltas.
+- **Regras de negócio encapsuladas** no Aggregate Root, não mais espalhadas em services.
+- **Serviço de aplicação** (`PagamentoApplicationService`) que orquestra a criação do agregado, o processamento e a persistência.
+- **Interface de repositório do domínio** (`PagamentoRepository`) como porta, sem dependência de Spring Data.
+- **Implementação JPA separada**: `PagamentoJpaEntity` mapeada para a tabela `pagamentos`, usando apenas `pedido_id` e `usuario_id` como colunas Long — sem `@OneToOne` ou `@ManyToOne` para entidades externas.
+- **Adapter** (`PagamentoRepositoryAdapter`) que implementa a porta do domínio e converte entre o agregado e a entidade JPA.
+- **Abstração do processador de cartão**: interface `ProcessadorCartao` com implementação concreta `ProcessadorCartaoSimulado`.
+- **Interface de integração** (`PagamentoFacade`) que serve como único ponto de contato entre o contexto de Pedido e o contexto de Pagamento.
+
+### Isolamento alcançado
+
+O contexto de Pagamento **não acessa diretamente**:
+
+- `UsuarioRepository` — recebe apenas `usuarioId` (Long)
+- `ProdutoRepository` — não necessita de produtos
+- `EstoqueRepository` — não necessita de estoque
+- `PedidoRepository` — recebe apenas `pedidoId` (Long)
+
+### Regras de pagamento preservadas
+
+Todas as regras originais continuam funcionando:
+
+- Valor menor ou igual a zero: recusado (`VALOR_INVALIDO`)
+- Valor acima de R$ 10.000,00: recusado (`LIMITE_EXCEDIDO`)
+- Cartão terminado em `0000`: bloqueado (`CARTAO_BLOQUEADO`)
+- Cartão terminado em `1111`: aprovado
+- Demais cartões válidos: aprovados
+
+### Estrutura de pacotes do contexto
+
+```
+br.edu.infnet.ecommerce.pagamento
+├── domain/
+│   ├── Pagamento.java              (Aggregate Root)
+│   ├── Dinheiro.java               (Value Object)
+│   ├── NumeroCartao.java           (Value Object)
+│   ├── PagamentoId.java            (Value Object)
+│   ├── StatusPagamento.java        (enum)
+│   ├── FormaPagamento.java         (enum)
+│   └── port/
+│       ├── PagamentoRepository.java  (interface)
+│       ├── ProcessadorCartao.java    (interface)
+│       └── ResultadoProcessadorCartao.java
+├── application/
+│   ├── PagamentoApplicationService.java
+│   ├── ProcessarPagamentoCommand.java
+│   └── ResultadoPagamento.java
+├── infrastructure/
+│   ├── persistence/
+│   │   ├── PagamentoJpaEntity.java
+│   │   ├── PagamentoJpaRepository.java
+│   │   └── PagamentoRepositoryAdapter.java
+│   └── gateway/
+│       └── ProcessadorCartaoSimulado.java
+└── integration/
+    ├── PagamentoFacade.java         (interface pública)
+    └── PagamentoFacadeImpl.java
+```
+
+### Alterações no legado
+
+- `PedidoService` passou a usar `PagamentoFacade` no lugar de `PagamentoService` e `PagamentoRepository`.
+- Removidos: `PagamentoService`, `Pagamento` (entity), `ProcessadorPagamento`, `ResultadoProcessamento` e `PagamentoRepository` (legado).
