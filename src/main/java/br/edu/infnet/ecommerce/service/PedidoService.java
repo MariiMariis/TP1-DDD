@@ -1,10 +1,20 @@
 package br.edu.infnet.ecommerce.service;
 
-import br.edu.infnet.ecommerce.entity.*;
+import br.edu.infnet.ecommerce.entity.Estoque;
+import br.edu.infnet.ecommerce.entity.ItemPedido;
+import br.edu.infnet.ecommerce.entity.Pedido;
+import br.edu.infnet.ecommerce.entity.Produto;
+import br.edu.infnet.ecommerce.entity.Usuario;
 import br.edu.infnet.ecommerce.exception.EstoqueInsuficienteException;
 import br.edu.infnet.ecommerce.exception.PagamentoRecusadoException;
 import br.edu.infnet.ecommerce.exception.RecursoNaoEncontradoException;
-import br.edu.infnet.ecommerce.repository.*;
+import br.edu.infnet.ecommerce.pagamento.application.ProcessarPagamentoCommand;
+import br.edu.infnet.ecommerce.pagamento.application.ResultadoPagamento;
+import br.edu.infnet.ecommerce.pagamento.integration.PagamentoFacade;
+import br.edu.infnet.ecommerce.repository.EstoqueRepository;
+import br.edu.infnet.ecommerce.repository.PedidoRepository;
+import br.edu.infnet.ecommerce.repository.ProdutoRepository;
+import br.edu.infnet.ecommerce.repository.UsuarioRepository;
 import br.edu.infnet.ecommerce.request.CriarPedidoRequest;
 import br.edu.infnet.ecommerce.request.ItemPedidoRequest;
 import org.springframework.stereotype.Service;
@@ -16,34 +26,24 @@ import java.util.List;
 @Service
 public class PedidoService {
 
-    /*
-     * Classe central da atividade.
-     *
-     * Ela acessa diretamente repositórios de Usuário, Produto, Estoque,
-     * Pedido e Pagamento, além de chamar PagamentoService.
-     * Essa mistura é proposital.
-     */
     private final UsuarioRepository usuarioRepository;
     private final ProdutoRepository produtoRepository;
     private final EstoqueRepository estoqueRepository;
     private final PedidoRepository pedidoRepository;
-    private final PagamentoRepository pagamentoRepository;
-    private final PagamentoService pagamentoService;
+    private final PagamentoFacade pagamentoFacade;
 
     public PedidoService(
             UsuarioRepository usuarioRepository,
             ProdutoRepository produtoRepository,
             EstoqueRepository estoqueRepository,
             PedidoRepository pedidoRepository,
-            PagamentoRepository pagamentoRepository,
-            PagamentoService pagamentoService
+            PagamentoFacade pagamentoFacade
     ) {
         this.usuarioRepository = usuarioRepository;
         this.produtoRepository = produtoRepository;
         this.estoqueRepository = estoqueRepository;
         this.pedidoRepository = pedidoRepository;
-        this.pagamentoRepository = pagamentoRepository;
-        this.pagamentoService = pagamentoService;
+        this.pagamentoFacade = pagamentoFacade;
     }
 
     public List<Pedido> listar() {
@@ -57,10 +57,6 @@ public class PedidoService {
                 ));
     }
 
-    /*
-     * Uma única transação envolve usuário, produto, estoque,
-     * pedido e pagamento.
-     */
     @Transactional
     public Pedido criar(CriarPedidoRequest request) {
         Usuario usuario = usuarioRepository.findById(request.usuarioId())
@@ -98,7 +94,6 @@ public class PedidoService {
                 );
             }
 
-            // A baixa ocorre antes do pagamento.
             estoque.setQuantidade(
                     estoque.getQuantidade() - itemRequest.quantidade()
             );
@@ -118,27 +113,22 @@ public class PedidoService {
         pedido.setStatus("AGUARDANDO_PAGAMENTO");
         Pedido pedidoSalvo = pedidoRepository.save(pedido);
 
-        Pagamento pagamento = pagamentoService.processar(
-                pedidoSalvo,
-                usuario,
+        ProcessarPagamentoCommand command = new ProcessarPagamentoCommand(
+                pedidoSalvo.getId(),
+                usuario.getId(),
                 total,
                 request.formaPagamento(),
                 request.numeroCartao()
         );
 
-        // Dependência direta do resultado persistido por outro service.
-        Pagamento pagamentoConsultado = pagamentoRepository
-                .findByPedidoId(pedidoSalvo.getId())
-                .orElseThrow(() -> new IllegalStateException(
-                        "Pagamento não foi persistido"
-                ));
+        ResultadoPagamento resultado = pagamentoFacade.processar(command);
 
-        if (!"APROVADO".equals(pagamentoConsultado.getStatus())) {
+        if (!resultado.aprovado()) {
             pedidoSalvo.setStatus("PAGAMENTO_RECUSADO");
             pedidoRepository.save(pedidoSalvo);
 
             throw new PagamentoRecusadoException(
-                    "Pagamento recusado: " + pagamento.getMotivo()
+                    "Pagamento recusado: " + resultado.motivo()
             );
         }
 
