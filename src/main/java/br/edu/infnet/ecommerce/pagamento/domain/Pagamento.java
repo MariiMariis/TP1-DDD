@@ -1,9 +1,15 @@
 package br.edu.infnet.ecommerce.pagamento.domain;
 
+import br.edu.infnet.ecommerce.pagamento.domain.event.EventoDominio;
+import br.edu.infnet.ecommerce.pagamento.domain.event.PagamentoAprovadoEvent;
+import br.edu.infnet.ecommerce.pagamento.domain.event.PagamentoRecusadoEvent;
 import br.edu.infnet.ecommerce.pagamento.domain.port.ProcessadorCartao;
 import br.edu.infnet.ecommerce.pagamento.domain.port.ResultadoProcessadorCartao;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 public class Pagamento {
 
@@ -17,6 +23,8 @@ public class Pagamento {
     private String motivo;
     private String codigoAutorizacao;
     private final LocalDateTime processadoEm;
+
+    private final List<EventoDominio> eventos = new ArrayList<>();
 
     private Pagamento(
             Long pedidoId,
@@ -49,25 +57,41 @@ public class Pagamento {
             ProcessadorCartao processadorCartao
     ) {
         if (valor.menorOuIgualAZero()) {
-            return recusado(pedidoId, usuarioId, valor, formaPagamento, numeroCartao, "VALOR_INVALIDO");
+            Pagamento p = recusado(pedidoId, usuarioId, valor, formaPagamento, numeroCartao, "VALOR_INVALIDO");
+            p.registrarEvento(new PagamentoRecusadoEvent(
+                    pedidoId, usuarioId, valor.valor(), "VALOR_INVALIDO", StatusPagamento.RECUSADO.name()
+            ));
+            return p;
         }
 
         Dinheiro limite = Dinheiro.de(new java.math.BigDecimal("10000.00"));
         if (valor.maiorQue(limite)) {
-            return recusado(pedidoId, usuarioId, valor, formaPagamento, numeroCartao, "LIMITE_EXCEDIDO");
+            Pagamento p = recusado(pedidoId, usuarioId, valor, formaPagamento, numeroCartao, "LIMITE_EXCEDIDO");
+            p.registrarEvento(new PagamentoRecusadoEvent(
+                    pedidoId, usuarioId, valor.valor(), "LIMITE_EXCEDIDO", StatusPagamento.RECUSADO.name()
+            ));
+            return p;
         }
 
         if (numeroCartao.terminaCom("0000")) {
-            return bloqueado(pedidoId, usuarioId, valor, formaPagamento, numeroCartao, "CARTAO_BLOQUEADO");
+            Pagamento p = bloqueado(pedidoId, usuarioId, valor, formaPagamento, numeroCartao, "CARTAO_BLOQUEADO");
+            p.registrarEvento(new PagamentoRecusadoEvent(
+                    pedidoId, usuarioId, valor.valor(), "CARTAO_BLOQUEADO", StatusPagamento.BLOQUEADO.name()
+            ));
+            return p;
         }
 
         ResultadoProcessadorCartao resultado = processadorCartao.processar(valor, numeroCartao);
 
         if (!resultado.aprovado()) {
-            return recusado(pedidoId, usuarioId, valor, formaPagamento, numeroCartao, resultado.motivo());
+            Pagamento p = recusado(pedidoId, usuarioId, valor, formaPagamento, numeroCartao, resultado.motivo());
+            p.registrarEvento(new PagamentoRecusadoEvent(
+                    pedidoId, usuarioId, valor.valor(), resultado.motivo(), StatusPagamento.RECUSADO.name()
+            ));
+            return p;
         }
 
-        return new Pagamento(
+        Pagamento p = new Pagamento(
                 pedidoId,
                 usuarioId,
                 valor,
@@ -78,6 +102,10 @@ public class Pagamento {
                 resultado.codigoAutorizacao(),
                 LocalDateTime.now()
         );
+        p.registrarEvento(new PagamentoAprovadoEvent(
+                null, pedidoId, usuarioId, valor.valor(), resultado.codigoAutorizacao()
+        ));
+        return p;
     }
 
     public static Pagamento reconstituir(
@@ -126,6 +154,18 @@ public class Pagamento {
                 pedidoId, usuarioId, valor, formaPagamento,
                 numeroCartao, StatusPagamento.BLOQUEADO, motivo, null, LocalDateTime.now()
         );
+    }
+
+    private void registrarEvento(EventoDominio evento) {
+        this.eventos.add(evento);
+    }
+
+    public List<EventoDominio> getEventos() {
+        return Collections.unmodifiableList(eventos);
+    }
+
+    public void limparEventos() {
+        this.eventos.clear();
     }
 
     public boolean foiAprovado() {

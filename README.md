@@ -159,3 +159,56 @@ br.edu.infnet.ecommerce.pagamento
 
 - `PedidoService` passou a usar `PagamentoFacade` no lugar de `PagamentoService` e `PagamentoRepository`.
 - Removidos: `PagamentoService`, `Pagamento` (entity), `ProcessadorPagamento`, `ResultadoProcessamento` e `PagamentoRepository` (legado).
+
+---
+
+## v2.0.0 — Eventos de Domínio
+
+### Agregado que referencia outro agregado
+
+O Aggregate Root `Pagamento` referencia o agregado `Pedido` e a entidade `Usuario` apenas por seus identificadores (`pedidoId` e `usuarioId` do tipo `Long`), sem dependência direta das classes JPA de outros contextos:
+
+```java
+public class Pagamento {
+    private PagamentoId id;
+    private final Long pedidoId;   // referência ao agregado Pedido
+    private final Long usuarioId;  // referência ao agregado Usuario
+    // ...
+}
+```
+
+### Abstração de evento de domínio
+
+A classe abstrata `EventoDominio` serve como base para todos os eventos do sistema. Cada evento possui um identificador único e um timestamp:
+
+```java
+public abstract class EventoDominio {
+    private final String eventId;
+    private final LocalDateTime ocorridoEm;
+    public abstract String tipo();
+}
+```
+
+### Implementação de evento de domínio
+
+Dois eventos concretos foram implementados:
+
+- `PagamentoAprovadoEvent` — publicado quando o pagamento é aprovado
+- `PagamentoRecusadoEvent` — publicado quando o pagamento é recusado ou bloqueado
+
+### Método de negócio com publicação de evento
+
+O factory method `Pagamento.criar()` registra internamente um evento de domínio conforme o resultado do processamento:
+
+```java
+public static Pagamento criar(...) {
+    // regras de negócio...
+    Pagamento p = new Pagamento(...);
+    p.registrarEvento(new PagamentoAprovadoEvent(
+        null, pedidoId, usuarioId, valor.valor(), resultado.codigoAutorizacao()
+    ));
+    return p;
+}
+```
+
+O `PagamentoApplicationService` coleta os eventos do agregado após a persistência e os publica via `ApplicationEventPublisher` do Spring.
